@@ -1,0 +1,34 @@
+{
+  "name": "@dreamcash-org/mcp",
+  "version": "0.3.1",
+  "description": "Connect your own AI agent to your Dreamcash account: it reads your account and trades, each trade confirmed by you or on its own within your limits.",
+  "keywords": [
+    "mcp",
+    "mcp-server",
+    "model-context-protocol",
+    "hyperliquid",
+    "dreamcash",
+    "ai-agent",
+    "trading"
+  ],
+  "license": "MIT",
+  "homepage": "https://dreamcash.xyz",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/dreamcash-org/mcp.git"
+  },
+  "type": "module",
+  "bin": {
+    "dreamcash-mcp": "dist/dreamcash-mcp.js"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}
