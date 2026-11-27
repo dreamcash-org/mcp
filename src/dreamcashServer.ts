@@ -216,18 +216,15 @@ export const fillTotalsOf = (content: CallToolResult["content"]) => {
   if (!text || text.type !== "text") return undefined;
   try {
     const { result } = JSON.parse(text.text) as {
-      result?: {
-        realized_pnl_usd?: unknown;
-        fees_usd?: unknown;
-        dreamcash_part_of_fees_usd?: unknown;
-      } | null;
+      result?: Record<string, unknown> | null;
     };
     if (typeof result?.fees_usd !== "number") return undefined;
-    return {
-      realized_pnl_usd: result.realized_pnl_usd,
-      fees_usd: result.fees_usd,
-      dreamcash_part_of_fees_usd: result.dreamcash_part_of_fees_usd,
-    };
+    // every figure the API reads off the fills, so a new one needs no release
+    return Object.fromEntries(
+      Object.entries(result).filter(
+        ([field, value]) => field.endsWith("_usd") && typeof value === "number",
+      ),
+    );
   } catch {
     return undefined;
   }

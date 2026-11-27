@@ -226,12 +226,16 @@ describe("fillTotalsOf", () => {
         realized_pnl_usd: -0.0132,
         fees_usd: 0.0268,
         dreamcash_part_of_fees_usd: 0.0134,
+        net_pnl_usd: -0.04,
+        executed_size: 0.0088,
       },
     });
+    // every USD figure the API gives, a new one included; ids and sizes stay out
     expect(fillTotalsOf(readBack)).toEqual({
       realized_pnl_usd: -0.0132,
       fees_usd: 0.0268,
       dreamcash_part_of_fees_usd: 0.0134,
+      net_pnl_usd: -0.04,
     });
   });
 
