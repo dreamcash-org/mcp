@@ -275,6 +275,8 @@ const REQUEST_TOOLS: Record<
       slippagePct: a.slippage_pct,
       takeProfitPrice: a.take_profit_price,
       stopLossPrice: a.stop_loss_price,
+      takeProfitPct: a.take_profit_pct,
+      stopLossPct: a.stop_loss_pct,
     },
   }),
   request_close_position: (a) => ({
