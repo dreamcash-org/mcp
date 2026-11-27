@@ -1,6 +1,6 @@
 {
   "name": "@dreamcash-org/mcp",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "description": "Connect your own AI agent to your Dreamcash account: it reads your account and trades, each trade confirmed by you or on its own within your limits.",
   "keywords": [
     "mcp",
