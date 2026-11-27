@@ -1,16 +1,16 @@
-# Publishes @dreamcash-org/mcp to npm when Dreamcash's monorepo pushes a
-# release here with its tag. This file is written by that release: change it
-# in the monorepo (packages/dreamcash-mcp/release-repo), not here.
+# Publishes @dreamcash-org/mcp to npm: run it by hand from the Actions tab.
+# It type-checks, tests and builds main, publishes it as the package's npm
+# trusted publisher, then tags it v<version>.
 name: Publish to npm
 
 permissions:
-  contents: read
+  # the v<version> tag
+  contents: write
   # npm trusted publishing: npm checks this repository and workflow
   id-token: write
 
 on:
-  push:
-    tags: ["v*"]
+  workflow_dispatch:
 
 concurrency:
   group: ${{ github.workflow }}
@@ -18,11 +18,17 @@ concurrency:
 
 jobs:
   publish:
-    name: Publish
+    name: Test, build and publish
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v5
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.13
 
       - name: Setup Node
         uses: actions/setup-node@v5
@@ -33,13 +39,29 @@ jobs:
       - name: Update npm
         run: npm install -g npm@11
 
-      - name: The tag names this version
+      - name: A version not published yet
+        id: version
         run: |
           version="$(node -p 'require("./package.json").version')"
-          if [ "v${version}" != "${GITHUB_REF_NAME}" ]; then
-            echo "Tag ${GITHUB_REF_NAME} doesn't match package.json ${version}" >&2
+          if npm view "@dreamcash-org/mcp@${version}" version >/dev/null 2>&1; then
+            echo "${version} is already on npm: raise version in package.json" >&2
             exit 1
           fi
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+
+      - name: Install
+        run: bun install --frozen-lockfile
+
+      - name: Types and tests
+        run: bun run typecheck && bun run test
+
+      - name: Build
+        run: bun run build
 
       - name: Publish
         run: npm publish --access public
+
+      - name: Tag it
+        run: |
+          git tag "v${{ steps.version.outputs.version }}"
+          git push origin "v${{ steps.version.outputs.version }}"
