@@ -13,6 +13,9 @@ export type OrderRequestParams = {
   slippagePct: number;
   takeProfitPrice?: number;
   stopLossPrice?: number;
+  /** % from a market order's fill; a key trading on its own sets these once it filled */
+  takeProfitPct?: number;
+  stopLossPct?: number;
 };
 export type CloseRequestParams = { percent: number; slippagePct: number };
 export type CancelRequestParams = { orderId: number };
@@ -97,6 +100,14 @@ export type TradeRequestCloids = {
 };
 
 export type TpslKind = "tp" | "sl";
+
+/** The trigger of a take-profit or stop-loss `pct` % from the entry's fill */
+export const tpslPriceFromFill = (
+  fillPrice: number,
+  pct: number,
+  kind: TpslKind,
+  isLong: boolean,
+) => (fillPrice * (100 + ((kind === "tp") === isLong ? pct : -pct))) / 100;
 
 export type Leverage = { type: "cross" | "isolated"; value: number };
 

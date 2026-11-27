@@ -33,8 +33,11 @@ import {
 import {
   createDreamcashServer,
   fillTotalsOf,
+  legsFromFill,
+  legsSetBy,
   tradeRequestToExecute,
   withExecution,
+  withField,
 } from "./dreamcashServer";
 import { signedFetch } from "./signedFetch";
 
@@ -298,6 +301,126 @@ describe("tradeRequestToExecute", () => {
         content: [{ type: "text", text: "not json" }],
       }),
     ).toBeUndefined();
+  });
+});
+
+describe("legsFromFill", () => {
+  const ORDER_ARGS = {
+    market: "BTC",
+    side: "long",
+    size_usd: 20,
+    stop_loss_pct: 5,
+    take_profit_pct: 10,
+  };
+  const askedOf = (args: Record<string, unknown>) => {
+    const asked = tradeRequestToExecute("request_order", args, {
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify({
+            request_id: "r-1",
+            execute_with_agent_key: true,
+          }),
+        },
+      ],
+    })?.asked;
+    if (!asked) throw new Error("not a request to carry out");
+    return asked;
+  };
+  const filled = (averagePrice: number | null) => ({
+    status: "executed",
+    result: { orderId: 7, executedSize: 0.0002, averagePrice, detail: null },
+  });
+
+  test("prices a long's legs from its average fill, as request_set_tp_sl takes them", () => {
+    expect(askedOf(ORDER_ARGS).params).toMatchObject({
+      stopLossPct: 5,
+      takeProfitPct: 10,
+    });
+    const legs = legsFromFill("r-1", askedOf(ORDER_ARGS), filled(100_000));
+    expect(legs).toEqual({
+      call: {
+        market: "BTC",
+        take_profit_price: 110_000,
+        stop_loss_price: 95_000,
+        idempotency_key: "legs-from-fill-r-1",
+      },
+    });
+  });
+
+  test("mirrors them for a short, and keeps the wallet the order named", () => {
+    const legs = legsFromFill(
+      "r-1",
+      askedOf({ ...ORDER_ARGS, side: "short", wallet: "0xabc" }),
+      filled(100_000),
+    );
+    expect(legs).toEqual({
+      call: expect.objectContaining({
+        wallet: "0xabc",
+        take_profit_price: 90_000,
+        stop_loss_price: 105_000,
+      }),
+    });
+  });
+
+  test("warns, setting nothing, while the fill or its price isn't known", () => {
+    for (const executed of [
+      { status: "claimed", result: null },
+      filled(null),
+    ]) {
+      const legs = legsFromFill("r-1", askedOf(ORDER_ARGS), executed);
+      expect(legs).toEqual({ problem: expect.stringContaining("has none") });
+    }
+  });
+
+  test("sets nothing for an order that asked none, didn't fill or wasn't placed", () => {
+    const { stop_loss_pct, take_profit_pct, ...noLegs } = ORDER_ARGS;
+    expect(
+      legsFromFill("r-1", askedOf(noLegs), filled(100_000)),
+    ).toBeUndefined();
+    expect(
+      legsFromFill("r-1", askedOf(ORDER_ARGS), {
+        status: "failed",
+        result: null,
+      }),
+    ).toBeUndefined();
+    expect(
+      legsFromFill("r-1", askedOf(ORDER_ARGS), { placed: false }),
+    ).toBeUndefined();
+  });
+
+  test("says the legs are set only once request_set_tp_sl's request executed", () => {
+    const call = { take_profit_price: 110_000, stop_loss_price: 95_000 };
+    const answer = (value: unknown, isError = false) => ({
+      content: [{ type: "text" as const, text: JSON.stringify(value) }],
+      isError,
+    });
+    expect(legsSetBy(call, answer({ status: "executed" }))).toEqual({
+      set: true,
+      ...call,
+      request: { status: "executed" },
+    });
+    for (const result of [
+      answer({ status: "claimed" }),
+      answer({ error: { code: "plan_refused" } }, true),
+    ]) {
+      expect(legsSetBy(call, result)).toMatchObject({
+        set: false,
+        warning: expect.stringContaining("has none"),
+      });
+    }
+  });
+
+  test("adds the outcome to the order's own answer", () => {
+    const content = withField(
+      [{ type: "text", text: JSON.stringify({ status: "executed" }) }],
+      "legs_from_fill",
+      { set: true },
+    );
+    expect(JSON.parse((content[0] as { text: string }).text)).toEqual({
+      status: "executed",
+      legs_from_fill: { set: true },
+    });
   });
 });
 

@@ -11,7 +11,16 @@ import {
 } from "@modelcontextprotocol/client";
 import { type CallToolResult, Server } from "@modelcontextprotocol/server";
 import type { LocalAccount } from "viem";
-import { AgentApiError, type AgentGuidance, agentApi } from "./agentApi";
+import {
+  type TpslKind,
+  tpslPriceFromFill,
+} from "./shared/hyperliquidOrders";
+import {
+  AgentApiError,
+  type AgentGuidance,
+  type AgentTradeRequest,
+  agentApi,
+} from "./agentApi";
 import {
   adoptPendingKey,
   KeyUnreadable,
@@ -229,6 +238,96 @@ export const fillTotalsOf = (content: CallToolResult["content"]) => {
     return undefined;
   }
 };
+
+const SET_LEGS_TOOL = "request_set_tp_sl";
+
+const LEGS_NOT_SET =
+  "Until these legs show on the book, the position has none: tell the user. Read the request with get_trade_request; if they didn't go on, set them with request_set_tp_sl.";
+
+/**
+ * The request_set_tp_sl call that sets the legs a market order asked in %,
+ * priced from its average fill, once the key placed it; a problem when that
+ * can't be known yet, nothing when it asked none or didn't fill
+ */
+export const legsFromFill = (
+  requestId: string,
+  asked: AskedRequest,
+  executed:
+    | { status: string; result: AgentTradeRequest["result"] }
+    // the key couldn't take it: nothing was signed
+    | { placed: boolean },
+): { call: Record<string, unknown> } | { problem: string } | undefined => {
+  const { side, takeProfitPct, stopLossPct } = asked.params;
+  const asksLegs = takeProfitPct !== undefined || stopLossPct !== undefined;
+  if (asked.kind !== "ORDER" || !asksLegs || !("status" in executed)) {
+    return undefined;
+  }
+  const fill = executed.result?.averagePrice;
+  if (executed.status === "claimed") {
+    return {
+      problem: `The order's outcome isn't known yet, so its take-profit and stop-loss aren't set. ${LEGS_NOT_SET}`,
+    };
+  }
+  if (executed.status !== "executed") return undefined;
+  if (!(typeof fill === "number" && fill > 0)) {
+    return {
+      problem: `The order filled, but its average price isn't known yet, so its take-profit and stop-loss aren't set. ${LEGS_NOT_SET}`,
+    };
+  }
+  const priceAt = (pct: unknown, kind: TpslKind) =>
+    typeof pct === "number"
+      ? tpslPriceFromFill(fill, pct, kind, side === "long")
+      : undefined;
+  return {
+    call: {
+      market: asked.market,
+      ...(asked.wallet !== undefined && { wallet: asked.wallet }),
+      take_profit_price: priceAt(takeProfitPct, "tp"),
+      stop_loss_price: priceAt(stopLossPct, "sl"),
+      // a lost answer, asked again, returns the same request
+      idempotency_key: `legs-from-fill-${requestId}`,
+    },
+  };
+};
+
+/** What request_set_tp_sl's answer, carried out with the key, says of the legs */
+export const legsSetBy = (
+  call: Record<string, unknown>,
+  result: CallToolResult,
+) => {
+  const text = result.content.find((block) => block.type === "text");
+  let answer: unknown;
+  try {
+    answer = text?.type === "text" ? JSON.parse(text.text) : undefined;
+  } catch {
+    answer = text?.type === "text" ? text.text : undefined;
+  }
+  const set =
+    !result.isError && (answer as { status?: unknown })?.status === "executed";
+  return {
+    set,
+    take_profit_price: call.take_profit_price,
+    stop_loss_price: call.stop_loss_price,
+    request: answer,
+    ...(!set && { warning: LEGS_NOT_SET }),
+  };
+};
+
+/** The answer's JSON with one more field */
+export const withField = (
+  content: CallToolResult["content"],
+  field: string,
+  value: unknown,
+): CallToolResult["content"] =>
+  content.map((block) => {
+    if (block.type !== "text") return block;
+    try {
+      const answer = JSON.parse(block.text) as Record<string, unknown>;
+      return { ...block, text: JSON.stringify({ ...answer, [field]: value }) };
+    } catch {
+      return block;
+    }
+  });
 
 /**
  * The request a request_* call's answer asks this key to carry out, with
@@ -450,6 +549,45 @@ export const createDreamcashServer = ({
     }
   };
 
+  // A tool call; a request_* answer that asks the key to carry it out is
+  // carried out before answering
+  const callAndCarryOut = async (
+    client: Client,
+    key: LocalAccount,
+    name: string,
+    args: Record<string, unknown>,
+  ) => {
+    const result = (await client.callTool({
+      name,
+      arguments: args,
+    })) as CallToolResult;
+    const toExecute = tradeRequestToExecute(name, args, result);
+    if (!toExecute) return { result };
+    const executed = await executeWithKey(toExecute.id, toExecute.asked, key);
+    // read back once: the answer that placed a trade also says what it
+    // came to; a failed read leaves that out, never the answer
+    const totals =
+      "status" in executed && executed.status === "executed"
+        ? await client
+            .callTool({
+              name: "get_trade_request",
+              arguments: { request_id: toExecute.id },
+            })
+            .then((readBack) =>
+              fillTotalsOf((readBack as CallToolResult).content),
+            )
+            .catch(() => undefined)
+        : undefined;
+    return {
+      result: {
+        ...result,
+        content: withExecution(result.content, { ...executed, ...totals }),
+      },
+      toExecute,
+      executed,
+    };
+  };
+
   server.setRequestHandler("tools/list", async () => {
     const tools = await linked()
       .then((client) => client?.listTools())
@@ -470,35 +608,28 @@ export const createDreamcashServer = ({
 
       const client = await linked();
       if (!client || !account) return failure(NOT_CONNECTED);
-      const result = (await client.callTool({
-        name,
-        arguments: args,
-      })) as CallToolResult;
-
-      const toExecute = tradeRequestToExecute(name, args, result);
-      if (!toExecute) return result;
-      const executed = await executeWithKey(
-        toExecute.id,
-        toExecute.asked,
+      const { result, toExecute, executed } = await callAndCarryOut(
+        client,
         account,
+        name,
+        args,
       );
-      // read back once: the answer that placed a trade also says what it
-      // came to; a failed read leaves that out, never the answer
-      const totals =
-        "status" in executed && executed.status === "executed"
-          ? await client
-              .callTool({
-                name: "get_trade_request",
-                arguments: { request_id: toExecute.id },
-              })
-              .then((readBack) =>
-                fillTotalsOf((readBack as CallToolResult).content),
-              )
-              .catch(() => undefined)
-          : undefined;
+      const legs =
+        toExecute && legsFromFill(toExecute.id, toExecute.asked, executed);
+      if (!legs) return result;
+      const legsSet =
+        "problem" in legs
+          ? { set: false, warning: legs.problem }
+          : await callAndCarryOut(client, account, SET_LEGS_TOOL, legs.call)
+              .then((set) => legsSetBy(legs.call, set.result))
+              .catch((error: unknown) => ({
+                set: false,
+                error: guidanceFor(error),
+                warning: LEGS_NOT_SET,
+              }));
       return {
         ...result,
-        content: withExecution(result.content, { ...executed, ...totals }),
+        content: withField(result.content, "legs_from_fill", legsSet),
       };
     } catch (error) {
       if (isUnauthorized(error)) upstream = undefined;
